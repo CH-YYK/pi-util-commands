@@ -93,6 +93,53 @@ async function runVerify() {
   }
   console.log("   ✓ /extensions <name> successfully inspected extension details.");
 
+  // Test interactive custom UI with ExtensionViewerComponent
+  let customUiRendered = false;
+  let componentDone = false;
+  const mockInteractiveCtx = {
+    cwd: packageRoot,
+    hasUI: true,
+    ui: {
+      custom: async (factory) => {
+        customUiRendered = true;
+        const fakeDone = () => {
+          componentDone = true;
+        };
+        const comp = await factory(
+          {},
+          { fg: (_c, s) => s, bold: (s) => s },
+          {},
+          fakeDone
+        );
+
+        // Test navigation
+        if (comp.getSelectedIndex() !== 0) throw new Error("Initial selected index should be 0");
+        comp.handleInput("j");
+        comp.handleInput("\x1b[B");
+        comp.handleInput("k");
+        comp.handleInput("\x1b[A");
+
+        // Test toggle input
+        await comp.toggleCurrent();
+
+        // Test reload input
+        await comp.reloadCurrent();
+
+        // Test ESC to close
+        comp.handleInput("\x1b");
+        return comp;
+      },
+      notify: () => {},
+    },
+    reload: async () => {},
+  };
+
+  await extensionCmd.handler("", mockInteractiveCtx);
+  if (!customUiRendered || !componentDone) {
+    throw new Error("Interactive TUI ExtensionViewerComponent failed to render or exit on ESC!");
+  }
+  console.log("   ✓ ExtensionViewerComponent interactive navigation, toggle, reload, and ESC exit passed.");
+
   await allCmdsCmd.handler("", mockCtx);
   console.log("   ✓ /commands overview command executed successfully.");
 
