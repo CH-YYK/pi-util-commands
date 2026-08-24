@@ -35,9 +35,11 @@ async function runVerify() {
   const skillsCmd = commandsExt.commands.get("skills");
   const agentsCmd = commandsExt.commands.get("agents");
   const toolsCmd = commandsExt.commands.get("tools");
+  const extensionCmd = commandsExt.commands.get("extension");
+  const extensionsCmd = commandsExt.commands.get("extensions");
   const allCmdsCmd = commandsExt.commands.get("commands");
 
-  if (!skillsCmd || !agentsCmd || !toolsCmd || !allCmdsCmd) {
+  if (!skillsCmd || !agentsCmd || !toolsCmd || !extensionCmd || !extensionsCmd || !allCmdsCmd) {
     throw new Error("Missing inspection slash commands in pi-util-commands!");
   }
 
@@ -77,6 +79,19 @@ async function runVerify() {
     throw new Error(`/tools command failed to distinguish active tools from string[]! Output:\n${notified}`);
   }
   console.log("   ✓ /tools command correctly identifies active tools from string array.");
+
+  // Test /extension and /extensions
+  await extensionCmd.handler("", mockCtx);
+  if (!notified.includes("Installed Extensions") || !notified.includes("Enabled")) {
+    throw new Error(`/extension command failed to list extensions! Output:\n${notified}`);
+  }
+  console.log("   ✓ /extension command listed installed extensions with enabled/disabled status.");
+
+  await extensionsCmd.handler("pi-util-commands", mockCtx);
+  if (!notified.includes("Extension: pi-util-commands") || !notified.includes("🟢 Enabled")) {
+    throw new Error(`/extensions command failed to inspect extension! Output:\n${notified}`);
+  }
+  console.log("   ✓ /extensions <name> successfully inspected extension details.");
 
   await allCmdsCmd.handler("", mockCtx);
   console.log("   ✓ /commands overview command executed successfully.");
@@ -131,8 +146,20 @@ async function runVerify() {
   await session.prompt("/agents");
   console.log("   ✓ Real session /agents dispatched successfully.");
 
+  await session.prompt("/extension");
+  if (!sessionNotified.includes("Installed Extensions") || !sessionNotified.includes("Enabled")) {
+    throw new Error(`Real session /extension failed! Got:\n${sessionNotified}`);
+  }
+  console.log("   ✓ Real session /extension dispatched successfully.");
+
+  await session.prompt("/extension pi-util-commands");
+  if (!sessionNotified.includes("pi-util-commands") || !sessionNotified.includes("Enabled")) {
+    throw new Error(`Real session /extension <name> failed! Got:\n${sessionNotified}`);
+  }
+  console.log("   ✓ Real session /extension <name> inspected successfully.");
+
   await session.prompt("/commands");
-  if (!sessionNotified.includes("/tools") || !sessionNotified.includes("/skills")) {
+  if (!sessionNotified.includes("/tools") || !sessionNotified.includes("/skills") || !sessionNotified.includes("/extension")) {
     throw new Error(`Real session /commands failed! Got:\n${sessionNotified}`);
   }
   console.log("   ✓ Real session /commands listed registered commands.");
