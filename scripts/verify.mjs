@@ -1,6 +1,8 @@
 import {
+  createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  SessionManager,
 } from "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,14 +57,85 @@ async function runVerify() {
   await agentsCmd.handler("", mockCtx);
   console.log("   ✓ /agents command executed successfully.");
 
+  // 1. Test fallback when runtime stubs throw
   await toolsCmd.handler("", mockCtx);
-  if (!notified.includes("Active Tools")) {
-    throw new Error("/tools command failed to list active tools!");
+  if (!notified.includes("Active Tools (7)")) {
+    throw new Error(`/tools fallback failed! Output:\n${notified}`);
   }
-  console.log("   ✓ /tools command executed successfully.");
+  console.log("   ✓ /tools command fallback executed successfully.");
+
+  // 2. Test live runtime behavior where getActiveTools returns string[]
+  extResult.runtime.getAllTools = () => [
+    { name: "read", label: "File Reader", description: "Read file" },
+    { name: "bash", label: "Bash Execution", description: "Run bash" },
+    { name: "edit", label: "File Editor", description: "Edit file" },
+  ];
+  extResult.runtime.getActiveTools = () => ["read", "bash"];
+
+  await toolsCmd.handler("", mockCtx);
+  if (!notified.includes("Active Tools (2)") || !notified.includes("Gated / Inactive Tools (1)")) {
+    throw new Error(`/tools command failed to distinguish active tools from string[]! Output:\n${notified}`);
+  }
+  console.log("   ✓ /tools command correctly identifies active tools from string array.");
 
   await allCmdsCmd.handler("", mockCtx);
   console.log("   ✓ /commands overview command executed successfully.");
+
+  // 3. Practical Pi Session Integration Test
+  console.log("--------------------------------------------------");
+  console.log("🔌 Testing inside real AgentSession lifecycle...");
+
+  const sessionLoader = new DefaultResourceLoader({
+    cwd: packageRoot,
+    agentDir: getAgentDir(),
+    noExtensions: true,
+    additionalExtensionPaths: [path.join(packageRoot, "index.ts")],
+  });
+  await sessionLoader.reload();
+
+  let sessionNotified = "";
+  const { session } = await createAgentSession({
+    cwd: packageRoot,
+    resourceLoader: sessionLoader,
+    sessionManager: SessionManager.inMemory(packageRoot),
+  });
+
+  await session.bindExtensions({
+    uiContext: {
+      notify: (msg) => {
+        sessionNotified = msg;
+      },
+    },
+    mode: "interactive",
+  });
+
+  // Test default session tool listing
+  await session.prompt("/tools");
+  if (!sessionNotified.includes("Active Tools (4)")) {
+    throw new Error(`Real session /tools failed default active tools! Got:\n${sessionNotified}`);
+  }
+  console.log("   ✓ Real session /tools correctly detected default 4 active tools.");
+
+  // Test dynamic active tools modification in session
+  session.setActiveToolsByName(["read", "bash"]);
+  await session.prompt("/tools");
+  if (!sessionNotified.includes("Active Tools (2)") || !sessionNotified.includes("Gated / Inactive Tools (5)")) {
+    throw new Error(`Real session /tools failed dynamic tool changes! Got:\n${sessionNotified}`);
+  }
+  console.log("   ✓ Real session /tools dynamically updated when tools changed (2 active, 5 inactive).");
+
+  // Test other slash commands in session
+  await session.prompt("/skills");
+  console.log("   ✓ Real session /skills dispatched successfully.");
+
+  await session.prompt("/agents");
+  console.log("   ✓ Real session /agents dispatched successfully.");
+
+  await session.prompt("/commands");
+  if (!sessionNotified.includes("/tools") || !sessionNotified.includes("/skills")) {
+    throw new Error(`Real session /commands failed! Got:\n${sessionNotified}`);
+  }
+  console.log("   ✓ Real session /commands listed registered commands.");
 
   console.log("==================================================");
   console.log("✅ pi-util-commands verification passed!");

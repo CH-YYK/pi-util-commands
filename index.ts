@@ -260,14 +260,16 @@ export default async function piCommandsExtension(pi: ExtensionAPI) {
         allTools = defaultTools;
       }
 
-      let activeTools: Array<{ name: string; label?: string; description?: string }> = [];
+      let rawActive: any[] = [];
       try {
-        activeTools = pi.getActiveTools();
+        rawActive = pi.getActiveTools();
       } catch {
-        activeTools = allTools;
+        rawActive = allTools.map((t) => t.name);
       }
 
-      const activeNames = new Set(activeTools.map((t) => t.name));
+      const activeNames = new Set(
+        rawActive.map((t) => (typeof t === "string" ? t : t.name)).filter(Boolean)
+      );
       const activeToolsList: string[] = [];
       const inactiveToolsList: string[] = [];
 
