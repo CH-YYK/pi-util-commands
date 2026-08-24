@@ -1,6 +1,6 @@
 # pi-util-commands
 
-Interactive capability & runtime inspection slash commands for the **[Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent)**.
+Interactive capability & runtime inspection slash commands for the **[Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent)**. Part of the **[Pi-Agent Project](https://github.com/users/CH-YYK/projects/1)** ecosystem.
 
 ---
 
