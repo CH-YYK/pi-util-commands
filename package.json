@@ -1,0 +1,25 @@
+{
+  "name": "pi-util-commands",
+  "version": "0.1.0",
+  "description": "Interactive runtime inspection slash commands for Pi Coding Agent (/skills, /agents, /tools, /commands)",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-extension",
+    "pi-agent",
+    "skills",
+    "agents",
+    "tools",
+    "commands"
+  ],
+  "author": "Kyle",
+  "license": "MIT"
+}
