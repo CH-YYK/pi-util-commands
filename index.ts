@@ -5,6 +5,7 @@
  * - `/skills [name]`: Discover and inspect agent skills (global and project-local)
  * - `/agents [name]`: Discover and inspect subagents and their directives (agents/*.md)
  * - `/tools`: Inspect active vs gated LLM tools for the current session
+ * - `/extension [name]` (or `/extensions`): Discover and inspect installed extensions and enabled/disabled state
  * - `/commands`: Overview of all available slash commands
  */
 
@@ -12,7 +13,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, DefaultPackageManager, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
+
+export interface DiscoveredExtension {
+  name: string;
+  source: string;
+  description: string;
+  path: string;
+  scope: "user" | "project";
+  origin: "package" | "top-level";
+  enabled: boolean;
+}
 
 export interface DiscoveredSkill {
   name: string;
@@ -153,6 +164,120 @@ export function loadAllAgents(cwd: string): DiscoveredAgent[] {
   }
 
   return agents;
+}
+
+/**
+ * Scan and load all installed extensions from packages, global, and project directories.
+ */
+export async function loadAllExtensions(cwd: string): Promise<DiscoveredExtension[]> {
+  const extensions: DiscoveredExtension[] = [];
+  const seenPaths = new Set<string>();
+
+  try {
+    const agentDir = getAgentDir();
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+    const pm = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+    const resolved = await pm.resolve();
+
+    for (const ext of resolved.extensions) {
+      const normalizedPath = path.resolve(ext.path);
+      if (seenPaths.has(normalizedPath)) continue;
+      seenPaths.add(normalizedPath);
+
+      let name = path.basename(ext.path, path.extname(ext.path));
+      let description = "Extension module";
+
+      if (ext.metadata.baseDir) {
+        const pkgJson = path.join(ext.metadata.baseDir, "package.json");
+        if (fs.existsSync(pkgJson)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(pkgJson, "utf-8"));
+            if (data.name) name = data.name;
+            if (data.description) description = data.description;
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      extensions.push({
+        name,
+        source: ext.metadata.source,
+        description,
+        path: ext.path,
+        scope: ext.metadata.scope === "project" ? "project" : "user",
+        origin: ext.metadata.origin,
+        enabled: ext.enabled,
+      });
+    }
+  } catch {
+    // Fallback directory discovery
+    const dirs = [
+      { dir: path.join(getAgentDir(), "extensions"), scope: "user" as const },
+      { dir: path.join(cwd, CONFIG_DIR_NAME, "extensions"), scope: "project" as const },
+      { dir: path.join(cwd, "extensions"), scope: "project" as const },
+    ];
+
+    for (const { dir, scope } of dirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const entryPath = path.join(dir, entry.name);
+          if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".js"))) {
+            const normalizedPath = path.resolve(entryPath);
+            if (!seenPaths.has(normalizedPath)) {
+              seenPaths.add(normalizedPath);
+              extensions.push({
+                name: entry.name.replace(/\.[tj]s$/, ""),
+                source: entryPath,
+                description: "Local top-level extension",
+                path: entryPath,
+                scope,
+                origin: "top-level",
+                enabled: true,
+              });
+            }
+          } else if (entry.isDirectory()) {
+            const indexTs = path.join(entryPath, "index.ts");
+            const indexJs = path.join(entryPath, "index.js");
+            const target = fs.existsSync(indexTs) ? indexTs : fs.existsSync(indexJs) ? indexJs : null;
+            if (target) {
+              const normalizedPath = path.resolve(target);
+              if (!seenPaths.has(normalizedPath)) {
+                seenPaths.add(normalizedPath);
+                let name = entry.name;
+                let description = "Directory extension";
+                const pkgJson = path.join(entryPath, "package.json");
+                if (fs.existsSync(pkgJson)) {
+                  try {
+                    const data = JSON.parse(fs.readFileSync(pkgJson, "utf-8"));
+                    if (data.name) name = data.name;
+                    if (data.description) description = data.description;
+                  } catch {
+                    // ignore
+                  }
+                }
+                extensions.push({
+                  name,
+                  source: entryPath,
+                  description,
+                  path: target,
+                  scope,
+                  origin: "top-level",
+                  enabled: true,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return extensions;
 }
 
 export default async function piCommandsExtension(pi: ExtensionAPI) {
@@ -297,7 +422,84 @@ export default async function piCommandsExtension(pi: ExtensionAPI) {
     },
   });
 
-  // 4. Command: /commands - Overview of all registered slash commands
+  // 4. Command: /extension (or /extensions) - List all installed extensions and enabled/disabled state
+  const extensionHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    const extensions = await loadAllExtensions(ctx.cwd);
+    const query = args.trim().toLowerCase();
+
+    if (query) {
+      const found = extensions.find(
+        (e) =>
+          e.name.toLowerCase() === query ||
+          e.source.toLowerCase() === query ||
+          e.path.toLowerCase().includes(query)
+      );
+      if (!found) {
+        ctx.ui.notify(`Extension "${args.trim()}" not found.`, "warning");
+        return;
+      }
+      let detail = `🧩 Extension: ${found.name}\n` +
+        `State: ${found.enabled ? "🟢 Enabled" : "⚪ Disabled"}\n` +
+        `Source: ${found.source}\n` +
+        `Scope: ${found.scope === "project" ? "Project-Local" : "Global"}\n` +
+        `Origin: ${found.origin === "package" ? "Package" : "Top-Level"}\n` +
+        `Path: ${found.path}\n\n` +
+        `Description:\n${found.description}`;
+      ctx.ui.notify(detail, "info");
+      return;
+    }
+
+    if (extensions.length === 0) {
+      ctx.ui.notify("No extensions installed or discovered.", "info");
+      return;
+    }
+
+    const enabledExts = extensions.filter((e) => e.enabled);
+    const disabledExts = extensions.filter((e) => !e.enabled);
+
+    let msg = `🧩 Installed Extensions (${extensions.length} total):\n\n`;
+
+    msg += `🟢 Enabled (${enabledExts.length}):\n`;
+    if (enabledExts.length > 0) {
+      msg += enabledExts
+        .map(
+          (e) =>
+            `  • ${e.name} (${e.scope === "project" ? "Project" : "Global"} ${e.origin === "package" ? "Package" : "Extension"})\n` +
+            `      Source: ${e.source}\n` +
+            `      ${e.description}`
+        )
+        .join("\n\n") + "\n\n";
+    } else {
+      msg += `  (none)\n\n`;
+    }
+
+    if (disabledExts.length > 0) {
+      msg += `⚪ Disabled (${disabledExts.length}):\n` +
+        disabledExts
+          .map(
+            (e) =>
+              `  • ${e.name} (${e.scope === "project" ? "Project" : "Global"} ${e.origin === "package" ? "Package" : "Extension"})\n` +
+              `      Source: ${e.source}\n` +
+              `      ${e.description}`
+          )
+          .join("\n\n") + "\n\n";
+    }
+
+    msg += `💡 Tip: Inspect extension details with \`/extension <name>\``;
+    ctx.ui.notify(msg, "info");
+  };
+
+  pi.registerCommand("extension", {
+    description: "List all installed extensions and their enabled/disabled state (/extension <name>)",
+    handler: extensionHandler,
+  });
+
+  pi.registerCommand("extensions", {
+    description: "List all installed extensions and their enabled/disabled state (/extensions <name>)",
+    handler: extensionHandler,
+  });
+
+  // 5. Command: /commands - Overview of all registered slash commands
   pi.registerCommand("commands", {
     description: "List all registered slash commands and templates",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
@@ -311,6 +513,8 @@ export default async function piCommandsExtension(pi: ExtensionAPI) {
           { name: "skills", description: "List all discovered skills or inspect details" },
           { name: "agents", description: "List all subagent personas or inspect instructions" },
           { name: "tools", description: "List active and available LLM tools in current session" },
+          { name: "extension", description: "List all installed extensions and their enabled/disabled state" },
+          { name: "extensions", description: "List all installed extensions and their enabled/disabled state" },
           { name: "commands", description: "List all registered slash commands and templates" },
         ];
       }
