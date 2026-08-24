@@ -14,6 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, DefaultPackageManager, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { Container, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
 
 export interface DiscoveredExtension {
   name: string;
@@ -280,6 +281,254 @@ export async function loadAllExtensions(cwd: string): Promise<DiscoveredExtensio
   return extensions;
 }
 
+/**
+ * Toggle enable/disable status of a package extension in settings.json.
+ */
+export function togglePackageExtension(
+  source: string,
+  scope: "user" | "project",
+  enable: boolean,
+  cwd: string
+): boolean {
+  try {
+    const agentDir = getAgentDir();
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+
+    const packages = scope === "project"
+      ? (settingsManager.getProjectSettings()?.packages ?? [])
+      : settingsManager.getPackages();
+
+    let modified = false;
+    const newPackages = packages.map((pkg) => {
+      const pkgSource = typeof pkg === "string" ? pkg : pkg.source;
+      if (pkgSource === source) {
+        modified = true;
+        if (enable) {
+          if (typeof pkg === "object") {
+            const { extensions, ...rest } = pkg;
+            if (Object.keys(rest).length === 1 && rest.source) {
+              return rest.source;
+            }
+            return rest;
+          }
+          return pkg;
+        } else {
+          if (typeof pkg === "string") {
+            return { source: pkg, extensions: [] };
+          } else {
+            return { ...pkg, extensions: [] };
+          }
+        }
+      }
+      return pkg;
+    });
+
+    if (modified) {
+      if (scope === "project") {
+        settingsManager.setProjectPackages(newPackages);
+      } else {
+        settingsManager.setPackages(newPackages);
+      }
+    }
+    return modified;
+  } catch {
+    return false;
+  }
+}
+
+export interface ExtensionViewerOptions {
+  cwd: string;
+  extensions: DiscoveredExtension[];
+  theme: any;
+  keybindings?: any;
+  onToggle?: (ext: DiscoveredExtension) => Promise<boolean> | boolean;
+  onReload?: () => Promise<void> | void;
+  onClose: () => void;
+}
+
+/**
+ * Interactive TUI component for browsing, inspecting, and toggling installed extensions.
+ */
+export class ExtensionViewerComponent extends Container {
+  private extensions: DiscoveredExtension[];
+  private selectedIndex: number = 0;
+  private cwd: string;
+  private theme: any;
+  private onClose: () => void;
+  private onToggle?: (ext: DiscoveredExtension) => Promise<boolean> | boolean;
+  private onReload?: () => Promise<void> | void;
+
+  private headerText: Text;
+  private summaryText: Text;
+  private listContainer: Container;
+  private detailsContainer: Container;
+  private statusNoticeText: Text;
+
+  constructor(options: ExtensionViewerOptions) {
+    super();
+    this.cwd = options.cwd;
+    this.extensions = options.extensions;
+    this.theme = options.theme;
+    this.onClose = options.onClose;
+    this.onToggle = options.onToggle;
+    this.onReload = options.onReload;
+
+    this.addChild(new Text(this.theme.fg("border", "─".repeat(60)), 1, 0));
+    this.headerText = new Text(this.theme.fg("accent", this.theme.bold("🧩 Extensions Manager")), 1, 0);
+    this.addChild(this.headerText);
+    this.summaryText = new Text("", 1, 0);
+    this.addChild(this.summaryText);
+    this.addChild(new Text(this.theme.fg("border", "─".repeat(60)), 1, 0));
+    this.addChild(new Spacer(1));
+
+    this.listContainer = new Container();
+    this.addChild(this.listContainer);
+    this.addChild(new Spacer(1));
+
+    this.addChild(new Text(this.theme.fg("border", "─".repeat(60)), 1, 0));
+    this.detailsContainer = new Container();
+    this.addChild(this.detailsContainer);
+    this.addChild(new Text(this.theme.fg("border", "─".repeat(60)), 1, 0));
+    this.addChild(new Spacer(1));
+
+    this.statusNoticeText = new Text("", 1, 0);
+    this.addChild(this.statusNoticeText);
+
+    // Keybindings hint footer
+    const hints = [
+      this.theme.fg("dim", "↑↓/jk") + this.theme.fg("muted", " navigate"),
+      this.theme.fg("dim", "Space/Enter") + this.theme.fg("muted", " toggle enable/disable"),
+      this.theme.fg("dim", "r") + this.theme.fg("muted", " reload runtime"),
+      this.theme.fg("dim", "Esc/q") + this.theme.fg("muted", " exit"),
+    ].join("   ");
+    this.addChild(new Text(hints, 1, 0));
+    this.addChild(new Text(this.theme.fg("border", "─".repeat(60)), 1, 0));
+
+    this.updateView();
+  }
+
+  public getSelectedIndex(): number {
+    return this.selectedIndex;
+  }
+
+  public setSelectedIndex(idx: number): void {
+    this.selectedIndex = Math.max(0, Math.min(this.extensions.length - 1, idx));
+    this.updateView();
+  }
+
+  public setStatusMessage(msg: string): void {
+    this.statusNoticeText.setText(msg ? `💡 ${this.theme.fg("warning", msg)}\n` : "");
+  }
+
+  public updateExtensions(exts: DiscoveredExtension[]): void {
+    this.extensions = exts;
+    this.selectedIndex = Math.max(0, Math.min(this.extensions.length - 1, this.selectedIndex));
+    this.updateView();
+  }
+
+  private updateView(): void {
+    const enabledCount = this.extensions.filter((e) => e.enabled).length;
+    const disabledCount = this.extensions.filter((e) => !e.enabled).length;
+    this.summaryText.setText(
+      this.theme.fg("dim", `Total: ${this.extensions.length}  |  `) +
+      this.theme.fg("success", `🟢 Enabled: ${enabledCount}`) +
+      this.theme.fg("dim", `  |  `) +
+      this.theme.fg("muted", `⚪ Disabled: ${disabledCount}`)
+    );
+
+    // Update list
+    this.listContainer.clear();
+    if (this.extensions.length === 0) {
+      this.listContainer.addChild(new Text(this.theme.fg("dim", "  (no extensions found)"), 1, 0));
+    } else {
+      for (let i = 0; i < this.extensions.length; i++) {
+        const ext = this.extensions[i];
+        const isSelected = i === this.selectedIndex;
+        const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
+        const statusBadge = ext.enabled ? this.theme.fg("success", "[🟢 Enabled]") : this.theme.fg("muted", "[⚪ Disabled]");
+        const scopeBadge = ext.scope === "project" ? this.theme.fg("warning", "[Project]") : this.theme.fg("accent", "[Global]");
+        const originBadge = ext.origin === "package" ? this.theme.fg("dim", "(pkg)") : this.theme.fg("dim", "(dir)");
+        const nameText = isSelected ? this.theme.fg("accent", this.theme.bold(ext.name)) : this.theme.fg("text", ext.name);
+
+        this.listContainer.addChild(
+          new Text(`${prefix}${statusBadge} ${scopeBadge} ${nameText} ${originBadge}`, 1, 0)
+        );
+      }
+    }
+
+    // Update details
+    this.detailsContainer.clear();
+    const current = this.extensions[this.selectedIndex];
+    if (current) {
+      const stateBadge = current.enabled
+        ? this.theme.fg("success", "🟢 Enabled")
+        : this.theme.fg("muted", "⚪ Disabled");
+      const lines = [
+        `${this.theme.bold("Name:")} ${this.theme.fg("accent", current.name)}    ${this.theme.bold("State:")} ${stateBadge}`,
+        `${this.theme.bold("Source:")} ${this.theme.fg("text", current.source)}`,
+        `${this.theme.bold("Scope:")} ${current.scope === "project" ? "Project-Local" : "Global"}    ${this.theme.bold("Origin:")} ${current.origin === "package" ? "Package" : "Top-Level Directory"}`,
+        `${this.theme.bold("Path:")} ${this.theme.fg("dim", current.path)}`,
+        "",
+        `${this.theme.bold("Description:")}`,
+        this.theme.fg("text", `  ${current.description}`),
+      ];
+      for (const line of lines) {
+        this.detailsContainer.addChild(new Text(line, 1, 0));
+      }
+    } else {
+      this.detailsContainer.addChild(new Text(this.theme.fg("dim", "Select an extension above to view details."), 1, 0));
+    }
+  }
+
+  public async toggleCurrent(): Promise<void> {
+    const current = this.extensions[this.selectedIndex];
+    if (!current) return;
+
+    if (this.onToggle) {
+      await this.onToggle(current);
+    } else {
+      togglePackageExtension(current.source, current.scope, !current.enabled, this.cwd);
+      current.enabled = !current.enabled;
+    }
+
+    this.setStatusMessage(
+      `Toggled "${current.name}" to ${current.enabled ? "Enabled" : "Disabled"}. Press "r" to reload session.`
+    );
+    this.updateView();
+  }
+
+  public async reloadCurrent(): Promise<void> {
+    if (this.onReload) {
+      this.setStatusMessage(`Reloading runtime extensions...`);
+      await this.onReload();
+      this.setStatusMessage(`Runtime reloaded successfully!`);
+    } else {
+      this.setStatusMessage(`Reload requested. Restart or reload session to apply changes.`);
+    }
+  }
+
+  public handleInput(keyData: string): void {
+    const kb = getKeybindings();
+    if (kb.matches(keyData, "tui.select.cancel") || keyData === "\x1b" || keyData === "q" || keyData === "\x03") {
+      this.onClose();
+    } else if (kb.matches(keyData, "tui.select.up") || keyData === "k" || keyData === "\x1b[A") {
+      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+      this.updateView();
+    } else if (kb.matches(keyData, "tui.select.down") || keyData === "j" || keyData === "\x1b[B") {
+      this.selectedIndex = Math.min(this.extensions.length - 1, this.selectedIndex + 1);
+      this.updateView();
+    } else if (keyData === " " || keyData === "t" || keyData === "\r" || keyData === "\n" || kb.matches(keyData, "tui.select.confirm")) {
+      void this.toggleCurrent();
+    } else if (keyData === "r" || keyData === "R") {
+      void this.reloadCurrent();
+    }
+  }
+
+  public dispose(): void {
+    // Cleanup if necessary
+  }
+}
+
 export default async function piCommandsExtension(pi: ExtensionAPI) {
   // Built-in tools fallback for inspection outside active session
   const defaultTools = [
@@ -424,15 +673,46 @@ export default async function piCommandsExtension(pi: ExtensionAPI) {
 
   // 4. Command: /extension (or /extensions) - List all installed extensions and enabled/disabled state
   const extensionHandler = async (args: string, ctx: ExtensionCommandContext) => {
-    const extensions = await loadAllExtensions(ctx.cwd);
-    const query = args.trim().toLowerCase();
+    const query = args.trim();
 
-    if (query) {
+    // If no query and interactive UI mode is available, open interactive TUI viewer
+    if (!query && ctx.hasUI && typeof ctx.ui.custom === "function") {
+      const extensions = await loadAllExtensions(ctx.cwd);
+      await ctx.ui.custom((_tui, theme, _keybindings, done) => {
+        return new ExtensionViewerComponent({
+          cwd: ctx.cwd,
+          extensions,
+          theme,
+          onToggle: async (ext) => {
+            togglePackageExtension(ext.source, ext.scope, !ext.enabled, ctx.cwd);
+            ext.enabled = !ext.enabled;
+            return ext.enabled;
+          },
+          onReload: async () => {
+            try {
+              if (typeof ctx.reload === "function") {
+                await ctx.reload();
+              }
+            } catch {
+              // ignore
+            }
+          },
+          onClose: () => done(undefined),
+        });
+      });
+      return;
+    }
+
+    // Text fallback or specific query inspection (/extension <name>)
+    const extensions = await loadAllExtensions(ctx.cwd);
+    const queryLower = query.toLowerCase();
+
+    if (queryLower) {
       const found = extensions.find(
         (e) =>
-          e.name.toLowerCase() === query ||
-          e.source.toLowerCase() === query ||
-          e.path.toLowerCase().includes(query)
+          e.name.toLowerCase() === queryLower ||
+          e.source.toLowerCase() === queryLower ||
+          e.path.toLowerCase().includes(queryLower)
       );
       if (!found) {
         ctx.ui.notify(`Extension "${args.trim()}" not found.`, "warning");

@@ -9,7 +9,7 @@ Interactive capability & runtime inspection slash commands for the **[Pi Coding 
 - **`/skills [name]`** — List all discovered Agent Skills across global (`~/.pi/agent/skills/`, `~/.pi/skills/`) and project-local (`skills/`, `.pi/skills/`) roots, or inspect details and directives for a specific skill.
 - **`/agents [name]`** — List all discovered subagent personas (`agents/*.md`), permitted toolsets, and inspect full system instructions.
 - **`/tools`** — Inspect active tools exposed to the LLM in the current session vs gated/inactive tools.
-- **`/extension [name]`** (or **`/extensions`**) — List all installed extensions and packages with enabled/disabled status, scope, origin, and inspect extension details.
+- **`/extension [name]`** (or **`/extensions`**) — Interactive TUI manager to browse installed extensions and packages, view real-time metadata, toggle enable/disable status with settings persistence, and reload runtime. In non-interactive mode or when given an argument, prints formatted details.
 - **`/commands`** — High-level index overview of all registered slash commands and templates.
 
 ---
